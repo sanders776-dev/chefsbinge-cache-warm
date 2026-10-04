@@ -1,0 +1,30 @@
+name: Test chefsbinge.com rate limit
+
+# Diagnostic only: are GitHub's servers refused because of speed, or always?
+# Fetches 5 pages one at a time, 3 seconds apart, as a phone, and prints the headers and the start
+# of the body of any refusal. Run it by hand from the Actions tab.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Slow fetch test
+        shell: bash
+        run: |
+          MOB='Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36'
+          echo "my location: $(curl -s --max-time 10 https://ipinfo.io/city), $(curl -s --max-time 10 https://ipinfo.io/region)"
+          for u in https://chefsbinge.com/ https://chefsbinge.com/japanese-potato-curry/ https://chefsbinge.com/lazanki/ https://chefsbinge.com/polish-kompot/ https://chefsbinge.com/beef-madras-recipe/; do
+            curl -s -o body.txt -D head.txt --max-time 30 -H "User-Agent: $MOB" -H 'Accept: text/html' -H 'Accept-Language: en-US,en;q=0.9' "$u"
+            echo "$(head -1 head.txt | tr -d '\r') | $(grep -i '^x-ac:' head.txt | tr -d '\r') | $u"
+            sleep 3
+          done
+          echo "== headers of the last response"
+          cat head.txt
+          echo "== start of the last body"
+          head -c 600 body.txt; echo
