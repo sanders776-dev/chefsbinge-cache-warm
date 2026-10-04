@@ -1,0 +1,59 @@
+name: Warm chefsbinge.com cache
+
+# Every 30 minutes, fetch every post and page of chefsbinge.com from GitHub's US servers, as a phone
+# and as a desktop, so real US visitors find the pages already in the WordPress.com edge cache.
+# A cached page is served in about 0.05 s; an uncached one takes about 1 to 1.5 s (measured 3-4 Oct 2026).
+# The page list is read from the site's own sitemaps on every run, so new posts are included
+# automatically. curl does not run JavaScript, so these visits do not count in Jetpack, Google
+# Analytics or Mediavine.
+
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Warm pages
+        shell: bash
+        run: |
+          set -u
+          MOB='Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36'
+          DESK='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36'
+
+          # page list from the site's own sitemaps (post and page), plus the homepage
+          for s in post-sitemap.xml page-sitemap.xml; do
+            curl -s --max-time 30 "https://chefsbinge.com/$s" | grep -o '<loc>[^<]*</loc>' | sed -e 's/<loc>//' -e 's#</loc>##'
+          done | grep '^https://chefsbinge.com/' | sort -u > urls.txt
+          echo 'https://chefsbinge.com/' >> urls.txt
+          sort -u -o urls.txt urls.txt
+          echo "pages: $(wc -l < urls.txt)"
+          if [ "$(wc -l < urls.txt)" -lt 20 ]; then echo "sitemap read failed, stopping"; exit 1; fi
+
+          fetch() {
+            # $1 = device label, $2 = user agent, $3 = url
+            out=$(curl -s -o /dev/null -D - --max-time 30 -w 'TTFB:%{time_starttransfer} CODE:%{http_code}' -H "User-Agent: $2" "$3")
+            ac=$(printf '%s' "$out" | grep -i '^x-ac:' | awk '{print $2, $4}' | tr -d '\r')
+            code=$(printf '%s' "$out" | grep -o 'CODE:[0-9]*' | cut -d: -f2)
+            ttfb=$(printf '%s' "$out" | grep -o 'TTFB:[0-9.]*' | cut -d: -f2)
+            echo "$1 $code ${ac:-none none} $ttfb $3"
+          }
+          export -f fetch
+          export MOB DESK
+
+          # phones first (about 90% of visitors), then desktops; 4 at a time to stay polite
+          xargs -P 4 -I{} bash -c 'fetch phone "$MOB" "$1"' _ {} < urls.txt > phone.log
+          xargs -P 4 -I{} bash -c 'fetch desktop "$DESK" "$1"' _ {} < urls.txt > desktop.log
+
+          for f in phone.log desktop.log; do
+            echo "== $f"
+            echo "cache locations: $(awk '{print $3}' $f | sed 's/^[0-9]*\.//' | sort | uniq -c | tr '\n' ' ')"
+            echo "results: $(awk '{print $4}' $f | sort | uniq -c | tr '\n' ' ')"
+            echo "http codes: $(awk '{print $2}' $f | sort | uniq -c | tr '\n' ' ')"
+          done
+          if grep -q ' 429 ' phone.log desktop.log; then echo "WARNING: the site rate-limited some requests (429)"; fi
